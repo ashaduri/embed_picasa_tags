@@ -2,12 +2,19 @@
 <?php
 /*
 	A CLI program to embed picasa tags from .picasa.ini into image files.
+	
+	Description:
+	Picasa (desktop version) doesn't write tags to PNG or any
+	other files except JPEG. Instead, it stores the tag information in
+	.picasa.ini files (per-directory). This program allows you to read these
+	tags from .picasa.ini and write them to individual files in EXIF, IPTC
+	and/or XMP formats. It will do this recursively for every directory.
 
 	Copyright:
 		(C) 2013  Alexander Shaduri <ashaduri 'at' gmail.com>
 	License: Zlib
-	
-	Version 1.0.0 (First public release).
+
+	Version 1.0.1
 
 	Requirements:
 		exiv2 or higher (tested with exiv2-0.23);
@@ -47,15 +54,28 @@ define("EXIFTOOL_BINARY", "exiftool");
 define("EXIV2_BINARY", "exiv2");
 
 
-/// Whether to use exiftool or exiv2. So far I haven't seen any differences,
+/// Whether to use exiftool or exiv2. So far I haven't noticed any differences,
 /// but digikam uses exiv2, so let's use that by default.
 define("EXIFTOOL_MODE", false);
+
+/// Some EXIF tags may only contain ASCII
+define("WRITE_EXIF", false);
+
+/// Some IPTC tags may only contain ASCII
+define("WRITE_IPTC", false);
+
+/// XMP uses unicode. Note that face tags are supported only by XMP.
+define("WRITE_XMP", true);
 
 /// Write XMP-MWG standard format for faces (used by Picasa)
 define("WRITE_XMP_MWG", true);
 
 /// Write XMP MS Windows Photo Gallery (WPG) extension format for faces (used by Windows)
 define("WRITE_XMP_WPG", true);
+
+/// It's better not to write unknown faces since SkyDrive errors out on upload
+/// if it encounters them.
+define("WRITE_UNKNOWN_FACES", false);
 
 
 /// Setting this to true makes the output a little more verbose.
@@ -276,8 +296,12 @@ function escape_exiv_string($str)
 /// Return ini tags in array(file => array(ImageInfo), ...) format
 function load_ini_image_infos($picasa_file)
 {
-	// We leave the unknown person tags so that they can be easily searched for.
-	$face_ids = array("ffffffffffffffff" => "Unknown");
+	$face_ids = array();
+
+	if (WRITE_UNKNOWN_FACES) {
+		// We can leave the unknown person tags so that they can be easily searched for.
+		$face_ids["ffffffffffffffff"] = "Unknown";
+	}
 
 	$ini_sections = app_parse_ini($picasa_file);
 	if ($ini_sections === NULL) {
@@ -328,6 +352,9 @@ function load_ini_image_infos($picasa_file)
 		if (isset($ini_image_info["faces"])) {
 			$faces = parse_faces_line($ini_image_info["faces"]);
 			foreach($faces as $face) {
+				if (!WRITE_UNKNOWN_FACES && $face->face_id === "ffffffffffffffff") {
+					continue;
+				}
 				if (!isset($face_ids[$face->face_id])) {
 					print "Warning: {$picasa_file} contains unknown face \"{$face->face_id}\" for image \"{$image_name}\", skipping face.\n";
 					continue;
@@ -427,14 +454,26 @@ function main($argc, $argv)
 				// See http://metadataworkinggroup.com/pdf/mwg_guidance.pdf
 				if (EXIFTOOL_MODE) {
 					$caption = escapeshellarg($image_info->caption);
-					// $tag_args[] = sprintf("-EXIF:ImageDescription=%s", $caption);  // ASCII, so too error-prone
-					$tag_args[] = sprintf("-IPTC:Caption-Abstract=%s", $caption);
-					$tag_args[] = sprintf("-XMP:Description=%s", $caption);
+					if (WRITE_EXIF) {
+						$tag_args[] = sprintf("-EXIF:ImageDescription=%s", $caption);  // ASCII, so too error-prone
+					}
+					if (WRITE_IPTC) {
+						$tag_args[] = sprintf("-IPTC:Caption-Abstract=%s", $caption);  // ASCII (?)
+					}
+					if (WRITE_XMP) {
+						$tag_args[] = sprintf("-XMP:Description=%s", $caption);
+					}
 				} else {
 					// See http://www.exiv2.org/sample.html for examples.
-					// $tag_args[] = "-M " . escapeshellarg("set Exif.Image.ImageDescription Ascii " . $image_info->caption);
-					$tag_args[] = "-M " . escapeshellarg("set Iptc.Application2.Caption " . escape_exiv_string($image_info->caption));
-					$tag_args[] = "-M " . escapeshellarg("set Xmp.dc.description LangAlt " . escape_exiv_string($image_info->caption));
+					if (WRITE_EXIF) {
+						$tag_args[] = "-M " . escapeshellarg("set Exif.Image.ImageDescription Ascii " . $image_info->caption);
+					}
+					if (WRITE_IPTC) {
+						$tag_args[] = "-M " . escapeshellarg("set Iptc.Application2.Caption " . escape_exiv_string($image_info->caption));
+					}
+					if (WRITE_XMP) {
+						$tag_args[] = "-M " . escapeshellarg("set Xmp.dc.description LangAlt " . escape_exiv_string($image_info->caption));
+					}
 				}
 			}
 
@@ -442,16 +481,24 @@ function main($argc, $argv)
 				foreach($image_info->keywords as $kw) {
 					if (EXIFTOOL_MODE) {
 						$kw = escapeshellarg($kw);
-						$tag_args[] = sprintf("-IPTC:Keywords=%s", $kw);
-						$tag_args[] = sprintf("-Subject=%s", $kw);
+						if (WRITE_IPTC) {
+							$tag_args[] = sprintf("-IPTC:Keywords=%s", $kw);
+						}
+						if (WRITE_XMP) {
+							$tag_args[] = sprintf("-XMP:Subject=%s", $kw);
+						}
 					} else {
-						$tag_args[] = "-M " . escapeshellarg("add Iptc.Application2.Keywords " . escape_exiv_string($kw));
-						$tag_args[] = "-M " . escapeshellarg("set Xmp.dc.subject " . escape_exiv_string($kw));  // unordered list
+						if (WRITE_IPTC) {
+							$tag_args[] = "-M " . escapeshellarg("add Iptc.Application2.Keywords " . escape_exiv_string($kw));
+						}
+						if (WRITE_XMP) {
+							$tag_args[] = "-M " . escapeshellarg("set Xmp.dc.subject " . escape_exiv_string($kw));  // unordered list
+						}
 					}
 				}
 			}
 
-			if (WRITE_XMP_MWG && !empty($image_info->faces)) {
+			if (WRITE_XMP && WRITE_XMP_MWG && !empty($image_info->faces)) {
 				$dim = getimagesize($output_file);
 				$px_width = $dim[0]; $px_height = $dim[1];
 
@@ -513,7 +560,7 @@ function main($argc, $argv)
 				}
 			}
 
-			if (WRITE_XMP_WPG && !empty($image_info->faces)) {
+			if (WRITE_XMP && WRITE_XMP_WPG && !empty($image_info->faces)) {
 				// XMP (MS Windows Photo Gallery extension)
 				if (EXIFTOOL_MODE) {
 					$face_areas = array();
