@@ -9,16 +9,18 @@
 	.picasa.ini files (per-directory). This program allows you to read these
 	tags from .picasa.ini and write them to individual files in EXIF, IPTC
 	and/or XMP formats. It will do this recursively for every directory.
+	It can also optionally convert the images to some other format.
 
 	Copyright:
 		(C) 2013  Alexander Shaduri <ashaduri 'at' gmail.com>
 	License: Zlib
 
-	Version 1.0.1
+	Version 1.0.2
 
 	Requirements:
 		exiv2 or higher (tested with exiv2-0.23);
 		OR exiftool 9.x or higher (tested with exiftool-9.43);
+		ImageMagick's convert (optional) for format conversion.
 		php5.1 or higher (tested with php-5.3.15 under Linux).
 		php-gd extension.
 
@@ -53,10 +55,19 @@ define("EXIFTOOL_BINARY", "exiftool");
 /// exiv2 binary (can be an absolute path)
 define("EXIV2_BINARY", "exiv2");
 
+/// convert (ImageMagick) binary (can be an absolute path)
+define("CONVERT_BINARY", "convert");
 
-/// Whether to use exiftool or exiv2. So far I haven't noticed any differences,
-/// but digikam uses exiv2, so let's use that by default.
-define("EXIFTOOL_MODE", false);
+/// Output format. Leave empty to retain the original format.
+define("OUTPUT_FORMAT", "jpg");
+
+/// Output format quality (for jpeg) or compression level (for png) if converting.
+define("OUTPUT_FORMAT_QUALITY", "90");
+
+
+/// Whether to use exiftool or exiv2. I've encountered problems with
+/// exiv2 (XMP toolkit saying the property doesn't exist), so default to exiftool.
+define("EXIFTOOL_MODE", true);
 
 /// Some EXIF tags may only contain ASCII
 define("WRITE_EXIF", false);
@@ -73,9 +84,15 @@ define("WRITE_XMP_MWG", true);
 /// Write XMP MS Windows Photo Gallery (WPG) extension format for faces (used by Windows)
 define("WRITE_XMP_WPG", true);
 
-/// It's better not to write unknown faces since SkyDrive errors out on upload
-/// if it encounters them.
+/// SkyDrive errors out on duplicate faces during upload.
+define("WRITE_DUPLICATE_FACES", false);
+
+/// It's better not to write unknown faces since they are usually duplicates and
+/// SkyDrive errors out on duplicate faces during upload.
 define("WRITE_UNKNOWN_FACES", false);
+
+/// Append keywords to caption for applications that show only captions.
+define("APPEND_KEYWORDS_TO_CAPTION", true);
 
 
 /// Setting this to true makes the output a little more verbose.
@@ -370,7 +387,16 @@ function load_ini_image_infos($picasa_file)
 					print "Face rectangle (x: {$px_rect->x}, y: {$px_rect->y}, w: {$px_rect->w}, h: {$px_rect->h}): {$face->name}\n";
 				}
 
-				$info->faces[] = $face;
+				if (WRITE_DUPLICATE_FACES) {
+					$info->faces[] = $face;
+				} else {
+					if (!isset($info->faces[$face->face_id])) {
+						$info->faces[$face->face_id] = $face;
+					} else {
+						print "Warning: {$picasa_file} contains duplicate face \"{$face->face_id}\" for image \"{$image_name}\", skipping face.\n";
+						continue;
+					}
+				}
 			}
 		}
 
@@ -439,15 +465,40 @@ function main($argc, $argv)
 			$input_file = $input_dir . DIRECTORY_SEPARATOR . $input_filename;
 			$output_file = $output_dir . DIRECTORY_SEPARATOR . $input_filename;
 
-			copy($input_file, $output_file);
+			if (OUTPUT_FORMAT === "")  {  // copy it if not changing the format
+				copy($input_file, $output_file);
+
+			} else {
+				$input_ext = strtolower(pathinfo($input_file, PATHINFO_EXTENSION));
+				$output_ext = strtolower(OUTPUT_FORMAT);
+
+// 				if ($input_ext == $output_ext || ($input_ext === "jpg" && $output_ext === "jpeg") || ($input_ext === "jpeg" && $output_ext === "jpg")) {
+// 					copy($input_file, $output_file);
+// 				} else {
+					// Convert unconditionally. This can be used to re-compress png files, for example.
+					$output_file = preg_replace('/\\.[^.]+$/', "." . OUTPUT_FORMAT, $output_file);
+					$cmd = sprintf("%s -quality %s %s %s",
+							escapeshellarg(CONVERT_BINARY), escapeshellarg(OUTPUT_FORMAT_QUALITY),
+							escapeshellarg($input_file), escapeshellarg($output_file));
+					if (VERBOSE_OUTPUT) {
+						print "$cmd\n";
+					}
+					system($cmd);
+// 				}
+			}
 
 			if (!isset($image_infos[$input_filename])) {
-				print "No .picasa.ini entry found for file \"{$input_file}\", copying it unmodified.\n";
+				print "No .picasa.ini entry found for file \"{$input_file}\", not embedding tags.\n";
 				continue;
 			}
 
 			$tag_args = array();
 			$image_info = $image_infos[$input_filename];
+
+			if (APPEND_KEYWORDS_TO_CAPTION && !empty($image_info->keywords)) {
+				$kw_str = implode(", ", $image_info->keywords);
+				$image_info->caption = ($image_info->caption === "" ? "" : ($image_info->caption . " - ")) . $kw_str;
+			}
 
 			if ($image_info->caption !== "") {
 				// According to XMP spec, these are equivalent tags.
@@ -455,7 +506,7 @@ function main($argc, $argv)
 				if (EXIFTOOL_MODE) {
 					$caption = escapeshellarg($image_info->caption);
 					if (WRITE_EXIF) {
-						$tag_args[] = sprintf("-EXIF:ImageDescription=%s", $caption);  // ASCII, so too error-prone
+						$tag_args[] = sprintf("-EXIF:ImageDescription=%s", $caption);  // ASCII, too error-prone
 					}
 					if (WRITE_IPTC) {
 						$tag_args[] = sprintf("-IPTC:Caption-Abstract=%s", $caption);  // ASCII (?)
@@ -599,7 +650,7 @@ function main($argc, $argv)
 			}
 
 			if (empty($tag_args)) {
-				print "No useful information found for file \"{$input_file}\", copying it unmodified.\n";
+				print "No useful information found for file \"{$input_file}\", not embedding tags.\n";
 				continue;
 			}
 
