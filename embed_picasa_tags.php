@@ -59,10 +59,10 @@ define("EXIV2_BINARY", "exiv2");
 define("CONVERT_BINARY", "convert");
 
 /// Output format. Leave empty to retain the original format.
-define("OUTPUT_FORMAT", "jpg");
+define("OUTPUT_FORMAT", "png");
 
 /// Output format quality (for jpeg) or compression level (for png) if converting.
-define("OUTPUT_FORMAT_QUALITY", "90");
+define("OUTPUT_FORMAT_QUALITY", "9");
 
 
 /// Whether to use exiftool or exiv2. I've encountered problems with
@@ -92,7 +92,7 @@ define("WRITE_DUPLICATE_FACES", false);
 define("WRITE_UNKNOWN_FACES", false);
 
 /// Append keywords to caption for applications that show only captions.
-define("APPEND_KEYWORDS_TO_CAPTION", true);
+define("APPEND_KEYWORDS_TO_CAPTION", false);
 
 
 /// Setting this to true makes the output a little more verbose.
